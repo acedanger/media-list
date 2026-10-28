@@ -19,3 +19,4 @@ services:
       - "docktail.service.enable=true"
       - "docktail.service.name=media-list"
       - "docktail.service.port=8080"
+      - "docktail.service.service-port=443"
