@@ -11,9 +11,11 @@ services:
       - TAILSCALE_OAUTH_CLIENT_SECRET=${TAILSCALE_OAUTH_CLIENT_SECRET}
 
   app:
-    image: caddy:latest
+    build: .
+    restart: unless-stopped
+    env_file: .env
     # No ports needed. DockTail proxies directly to the container IP.
     labels:
       - "docktail.service.enable=true"
-      - "docktail.service.name=myapp"
-      - "docktail.service.port=80"
+      - "docktail.service.name=media-list"
+      - "docktail.service.port=8080"
