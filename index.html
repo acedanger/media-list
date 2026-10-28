@@ -104,7 +104,7 @@
 <table>
   <thead><tr>
     <th><input type="checkbox" id="all" aria-label="Select all removable shows"></th>
-    <th data-sort="rank">#</th>
+    <th data-sort="position" title="Position in the list's configured sort">#</th>
     <th data-sort="title">Title</th>
     <th data-sort="year">Year</th>
     <th data-sort="score" title="MDBList average score (0–100)">Score</th>
@@ -135,7 +135,7 @@
 <script>
 const $ = s => document.querySelector(s);
 const STATUS = { in_sonarr: "In Sonarr", excluded: "Excluded", missing: "Not in Sonarr" };
-let shows = [], filter = "all", sortKey = "rank", sortDir = 1;
+let shows = [], filter = "all", sortKey = "position", sortDir = 1;
 const selected = new Set();
 const statusFilter = new Set();  // empty = all statuses
 const NO_STATUS = "(none)";
@@ -154,8 +154,10 @@ const ID_LINKS = {
   tvdb: id => `https://thetvdb.com/dereferrer/series/${id}`,
   trakt: id => `https://trakt.tv/search/trakt/${id}?id_type=show`,
 };
-function idsCell(ids) {
-  const rows = Object.entries(ids || {}).filter(([, v]) => v).map(([k, v]) => {
+function idsCell(ids, rank) {
+  const entries = Object.entries(ids || {});
+  if (rank != null) entries.push(["list rank", rank]);
+  const rows = entries.filter(([, v]) => v).map(([k, v]) => {
     const val = ID_LINKS[k] ? `<a href="${esc(ID_LINKS[k](v))}" target="_blank" rel="noopener">${esc(v)}</a>` : esc(v);
     return `<dt>${esc(k)}</dt><dd>${val}</dd>`;
   }).join("");
@@ -188,7 +190,7 @@ function render() {
     const title = s.imdb ? `<a href="https://www.imdb.com/title/${esc(s.imdb)}/" target="_blank" rel="noopener">${esc(s.title)}</a>` : esc(s.title);
     return `<tr>
       <td>${so ? `<input type="checkbox" data-id="${so.id}" ${selected.has(so.id) ? "checked" : ""} aria-label="Select ${esc(s.title)}">` : ""}</td>
-      <td class="num">${s.rank ?? ""}</td>
+      <td class="num">${s.position}</td>
       <td class="title">${title}</td>
       <td>${s.year ?? ""}</td>
       <td class="num">${s.score ?? ""}</td>
@@ -196,7 +198,7 @@ function render() {
       <td><span class="badge ${s.status}">${STATUS[s.status]}</span>${so && !so.monitored ? ' <span class="unmonitored">unmonitored</span>' : ""}</td>
       <td class="num">${so ? `${so.episodeFileCount} / ${so.episodeCount}` : ""}</td>
       <td class="num">${so ? fmtSize(so.sizeOnDisk) : ""}</td>
-      <td>${idsCell(s.ids)}</td>
+      <td>${idsCell(s.ids, s.rank)}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="10" class="muted">No shows match.</td></tr>`;
 

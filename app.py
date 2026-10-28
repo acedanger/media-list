@@ -171,14 +171,16 @@ def shows_with_sonarr(data):
 
     shows = []
     show_info = data.get("show_info", {})
-    for item in data["shows"]:
+    # data["shows"] is already in MDBList's SORT/ORDER; "position" preserves that,
+    # while "rank" is the curator's order in the list itself.
+    for position, item in enumerate(data["shows"], 1):
         tvdb = item.get("tvdb_id")
         s = series.get(tvdb)
         info = show_info.get(tmdb_id(item), {})
         ids = {"imdb": item.get("imdb_id"), "tmdb": tmdb_id(item), "tvdb": tvdb}
         ids.update({k: v for k, v in (info.get("ids") or {}).items() if v})
         row = {
-            "rank": item.get("rank"), "title": item.get("title"),
+            "position": position, "rank": item.get("rank"), "title": item.get("title"),
             "year": item.get("release_year"), "imdb": item.get("imdb_id"),
             "ids": ids, "score": info.get("score_average"),
             # TMDB's status (Returning Series, Ended, Canceled, ...), else Sonarr's.
