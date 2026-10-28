@@ -87,6 +87,7 @@
     <th data-sort="rank">#</th>
     <th data-sort="title">Title</th>
     <th data-sort="year">Year</th>
+    <th data-sort="score" title="MDBList average score (0–100)">Score</th>
     <th data-sort="showStatus">Status</th>
     <th data-sort="status">Sonarr</th>
     <th data-sort="episodes">Episodes</th>
@@ -142,6 +143,7 @@ function sortValue(s) {
   switch (sortKey) {
     case "title": return (s.title || "").toLowerCase();
     case "showStatus": return s.showStatus || "~";
+    case "score": return s.score ?? -1;
     case "status": return s.status;
     case "episodes": return s.sonarr ? s.sonarr.episodeFileCount : -1;
     case "size": return s.sonarr ? s.sonarr.sizeOnDisk : -1;
@@ -165,13 +167,14 @@ function render() {
       <td class="num">${s.rank ?? ""}</td>
       <td class="title">${title}</td>
       <td>${s.year ?? ""}</td>
+      <td class="num">${s.score ?? ""}</td>
       <td><span class="show-status ${slug(s.showStatus)}">${esc(s.showStatus)}</span></td>
       <td><span class="badge ${s.status}">${STATUS[s.status]}</span>${so && !so.monitored ? ' <span class="unmonitored">unmonitored</span>' : ""}</td>
       <td class="num">${so ? `${so.episodeFileCount} / ${so.episodeCount}` : ""}</td>
       <td class="num">${so ? fmtSize(so.sizeOnDisk) : ""}</td>
       <td>${idsCell(s.ids)}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="9" class="muted">No shows match.</td></tr>`;
+  }).join("") || `<tr><td colspan="10" class="muted">No shows match.</td></tr>`;
 
   const removable = rows.filter(s => s.sonarr).map(s => s.sonarr.id);
   $("#all").checked = removable.length > 0 && removable.every(id => selected.has(id));
@@ -210,7 +213,10 @@ document.querySelectorAll(".filters button").forEach(b => b.addEventListener("cl
 }));
 $("#q").addEventListener("input", render);
 document.querySelectorAll("th[data-sort]").forEach(th => th.addEventListener("click", () => {
-  if (sortKey === th.dataset.sort) sortDir = -sortDir; else { sortKey = th.dataset.sort; sortDir = 1; }
+  // Numbers where bigger is better start highest-first.
+  const DESC_FIRST = ["score", "episodes", "size"];
+  if (sortKey === th.dataset.sort) sortDir = -sortDir;
+  else { sortKey = th.dataset.sort; sortDir = DESC_FIRST.includes(sortKey) ? -1 : 1; }
   render();
 }));
 $("#rows").addEventListener("change", e => {

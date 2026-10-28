@@ -63,7 +63,7 @@ def fetch_list():
 
 
 def fetch_show_info(tmdb_ids):
-    """Return {tmdb_id: {"status": ..., "ids": {...}}} via MDBList's batch media lookup."""
+    """Return {tmdb_id: {"status", "score_average", "ids"}} via MDBList's batch media lookup."""
     info = {}
     for i in range(0, len(tmdb_ids), 100):
         req = urllib.request.Request(
@@ -76,7 +76,8 @@ def fetch_show_info(tmdb_ids):
             for item in json.load(resp):
                 tmdb = (item.get("ids") or {}).get("tmdb")
                 if tmdb:
-                    info[tmdb] = {"status": item.get("status"), "ids": item.get("ids") or {}}
+                    info[tmdb] = {"status": item.get("status"), "score_average": item.get("score_average"),
+                                  "ids": item.get("ids") or {}}
     return info
 
 
@@ -179,7 +180,7 @@ def shows_with_sonarr(data):
         row = {
             "rank": item.get("rank"), "title": item.get("title"),
             "year": item.get("release_year"), "imdb": item.get("imdb_id"),
-            "ids": ids,
+            "ids": ids, "score": info.get("score_average"),
             # TMDB's status (Returning Series, Ended, Canceled, ...), else Sonarr's.
             "showStatus": info.get("status") or (s.get("status", "").title() if s else None),
             "status": "in_sonarr" if s else ("excluded" if tvdb in excluded else "missing"),
