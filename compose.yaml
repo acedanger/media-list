@@ -1,0 +1,19 @@
+services:
+  docktail:
+    image: ghcr.io/marvinvr/docktail:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/tailscale:/var/run/tailscale
+    environment:
+      # Optional but recommended. Enables automatic service creation.
+      - TAILSCALE_OAUTH_CLIENT_ID=${TAILSCALE_OAUTH_CLIENT_ID}
+      - TAILSCALE_OAUTH_CLIENT_SECRET=${TAILSCALE_OAUTH_CLIENT_SECRET}
+
+  app:
+    image: caddy:latest
+    # No ports needed. DockTail proxies directly to the container IP.
+    labels:
+      - "docktail.service.enable=true"
+      - "docktail.service.name=myapp"
+      - "docktail.service.port=80"
