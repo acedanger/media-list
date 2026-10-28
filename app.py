@@ -1,16 +1,17 @@
 """media-list: serve an MDBList list in formats Sonarr and Radarr can import.
 
 Endpoints
-  /             human-readable HTML table of the list
-  /sonarr.json  Sonarr v4 "Custom List" format:  [{"tvdbId": 123, "title": ...}]
-  /radarr.json  Radarr "Custom List" format:     [{"id": <tmdb>, "imdb_id": ..., "title": ...}]
-  /items.json   the cached MDBList response (movies + shows)
-  /healthz      liveness probe
+  /                   HTML page: the list, Sonarr status, bulk remove
+  /sonarr.json        Sonarr v4 "Custom List" format:  [{"tvdbId": 123, "title": ...}]
+  /radarr.json        Radarr "Custom List" format:     [{"id": <tmdb>, "imdb_id": ..., "title": ...}]
+  /items.json         the cached MDBList response (movies + shows)
+  /api/shows          list shows merged with Sonarr status/stats (used by the page)
+  /api/sonarr/remove  POST {"seriesIds": [...], "deleteFiles": bool}
+  /healthz            liveness probe
 
 Only the Python standard library is used.
 """
 
-import html
 import json
 import logging
 import os
@@ -28,6 +29,10 @@ SORT = os.environ.get("MDBLIST_SORT", "score_average")
 ORDER = os.environ.get("MDBLIST_ORDER", "asc")
 CACHE_TTL = int(os.environ.get("CACHE_TTL", "3600"))
 PORT = int(os.environ.get("PORT", "8080"))
+SONARR_URL = os.environ.get("SONARR_URL", "http://host.docker.internal:8989").rstrip("/")
+SONARR_API_KEY = os.environ.get("SONARR_API_KEY", "")
+
+INDEX_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
 
 log = logging.getLogger("media-list")
 
@@ -82,6 +87,32 @@ class Cache:
 cache = Cache()
 
 
+def sonarr(method, path, params=None):
+    """Call the Sonarr v3 API (also used by Sonarr v4)."""
+    url = f"{SONARR_URL}/api/v3{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, method=method, headers={
+        "X-Api-Key": SONARR_API_KEY,
+        "Accept": "application/json",
+        "User-Agent": "media-list/1.0",
+    })
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = resp.read()
+    return json.loads(body) if body else None
+
+
+def sonarr_state():
+    """Return ({tvdbId: series}, {excluded tvdbIds}) from Sonarr."""
+    series = {s["tvdbId"]: s for s in sonarr("GET", "/series") if s.get("tvdbId")}
+    try:
+        excluded = {e["tvdbId"] for e in sonarr("GET", "/importlistexclusion") if e.get("tvdbId")}
+    except urllib.error.HTTPError as exc:
+        log.warning("could not read Sonarr list exclusions: %s", exc)
+        excluded = set()
+    return series, excluded
+
+
 def tmdb_id(item):
     return (item.get("ids") or {}).get("tmdb") or item.get("id")
 
@@ -96,46 +127,67 @@ def radarr_items(data):
             for m in data["movies"] if tmdb_id(m)]
 
 
-def render_html(data):
-    rows = []
-    for item in data["shows"] + data["movies"]:
-        imdb = item.get("imdb_id") or ""
-        title = html.escape(item.get("title") or "")
-        if imdb:
-            title = f'<a href="https://www.imdb.com/title/{html.escape(imdb)}/">{title}</a>'
-        rows.append(
-            f"<tr><td>{item.get('rank', '')}</td><td>{title}</td>"
-            f"<td>{item.get('release_year') or ''}</td><td>{item.get('mediatype', '')}</td>"
-            f"<td>{item.get('tvdb_id') or ''}</td><td>{tmdb_id(item) or ''}</td></tr>"
-        )
-    updated = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(cache.fetched_at))
-    return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(LIST)}</title>
-<style>
-  :root {{ color-scheme: light dark; }}
-  body {{ font-family: system-ui, sans-serif; margin: 1rem; }}
-  table {{ border-collapse: collapse; width: 100%; }}
-  th, td {{ text-align: left; padding: .3rem .6rem; border-bottom: 1px solid #8884; }}
-  code {{ font-size: .9em; }}
-</style></head><body>
-<h1>{html.escape(LIST)}</h1>
-<p>{len(data["shows"])} shows, {len(data["movies"])} movies &middot;
-sorted by <code>{html.escape(SORT)}</code> ({html.escape(ORDER)}) &middot; updated {updated}</p>
-<p>Sonarr: <a href="sonarr.json"><code>/sonarr.json</code></a> &middot;
-Radarr: <a href="radarr.json"><code>/radarr.json</code></a> &middot;
-Raw: <a href="items.json"><code>/items.json</code></a></p>
-<table><thead><tr><th>#</th><th>Title</th><th>Year</th><th>Type</th><th>TVDB</th><th>TMDB</th></tr></thead>
-<tbody>{''.join(rows)}</tbody></table>
-</body></html>"""
+def shows_with_sonarr(data):
+    """Merge list shows with their Sonarr status for the page."""
+    result = {
+        "list": LIST, "sort": SORT, "order": ORDER,
+        "updated": cache.fetched_at, "sonarr": {"configured": bool(SONARR_API_KEY)},
+    }
+    series, excluded = {}, set()
+    if SONARR_API_KEY:
+        try:
+            series, excluded = sonarr_state()
+            result["sonarr"]["ok"] = True
+        except (urllib.error.URLError, ValueError) as exc:
+            log.error("Sonarr request failed: %s", exc)
+            result["sonarr"].update(ok=False, error=str(exc))
+
+    shows = []
+    for item in data["shows"]:
+        tvdb = item.get("tvdb_id")
+        s = series.get(tvdb)
+        row = {
+            "rank": item.get("rank"), "title": item.get("title"),
+            "year": item.get("release_year"), "imdb": item.get("imdb_id"),
+            "tvdbId": tvdb, "tmdbId": tmdb_id(item),
+            "status": "in_sonarr" if s else ("excluded" if tvdb in excluded else "missing"),
+        }
+        if s:
+            stats = s.get("statistics") or {}
+            row["sonarr"] = {
+                "id": s["id"], "titleSlug": s.get("titleSlug"),
+                "monitored": s.get("monitored"), "seriesStatus": s.get("status"),
+                "episodeFileCount": stats.get("episodeFileCount", 0),
+                "episodeCount": stats.get("episodeCount", 0),
+                "sizeOnDisk": stats.get("sizeOnDisk", 0),
+            }
+        shows.append(row)
+    result["shows"] = shows
+    return result
+
+
+def remove_series(series_ids, delete_files):
+    """Delete series from Sonarr, adding each to Sonarr's import list exclusions."""
+    results = []
+    for sid in series_ids:
+        try:
+            sonarr("DELETE", f"/series/{int(sid)}", {
+                "deleteFiles": str(bool(delete_files)).lower(),
+                "addImportListExclusion": "true",
+            })
+            log.info("removed Sonarr series %s (deleteFiles=%s)", sid, bool(delete_files))
+            results.append({"id": sid, "ok": True})
+        except (urllib.error.URLError, ValueError) as exc:
+            log.error("failed to remove Sonarr series %s: %s", sid, exc)
+            results.append({"id": sid, "ok": False, "error": str(exc)})
+    return results
 
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "media-list/1.0"
 
     def send(self, status, body, content_type):
-        payload = body.encode()
+        payload = body if isinstance(body, bytes) else body.encode()
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
@@ -150,11 +202,14 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path.rstrip("/") or "/"
         if path == "/healthz":
             return self.send_json({"ok": True})
+        if path == "/":
+            with open(INDEX_HTML, "rb") as f:
+                return self.send(200, f.read(), "text/html; charset=utf-8")
         routes = {
-            "/": lambda d: self.send(200, render_html(d), "text/html; charset=utf-8"),
             "/sonarr.json": lambda d: self.send_json(sonarr_items(d)),
             "/radarr.json": lambda d: self.send_json(radarr_items(d)),
             "/items.json": lambda d: self.send_json(d),
+            "/api/shows": lambda d: self.send_json(shows_with_sonarr(d)),
         }
         route = routes.get(path)
         if route is None:
@@ -167,6 +222,24 @@ class Handler(BaseHTTPRequestHandler):
 
     do_HEAD = do_GET
 
+    def do_POST(self):
+        path = urllib.parse.urlsplit(self.path).path.rstrip("/")
+        if path != "/api/sonarr/remove":
+            return self.send_json({"error": "not found"}, 404)
+        # Requiring JSON forces a CORS preflight, so other sites can't submit this cross-origin.
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            return self.send_json({"error": "Content-Type must be application/json"}, 415)
+        if not SONARR_API_KEY:
+            return self.send_json({"error": "SONARR_API_KEY is not set"}, 503)
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            ids = [int(i) for i in body["seriesIds"]]
+        except (ValueError, KeyError, TypeError):
+            return self.send_json({"error": "expected {\"seriesIds\": [int, ...]}"}, 400)
+        results = remove_series(ids, body.get("deleteFiles", False))
+        status = 200 if all(r["ok"] for r in results) else 502
+        self.send_json({"results": results}, status)
+
     def log_message(self, fmt, *args):
         log.info("%s %s", self.address_string(), fmt % args)
 
@@ -175,7 +248,9 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if not API_KEY:
         raise SystemExit("MDBLIST_API_KEY is not set")
-    log.info("serving %s on :%d (cache %ds)", LIST, PORT, CACHE_TTL)
+    if not SONARR_API_KEY:
+        log.warning("SONARR_API_KEY is not set; Sonarr features are disabled")
+    log.info("serving %s on :%d (cache %ds, sonarr %s)", LIST, PORT, CACHE_TTL, SONARR_URL)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 

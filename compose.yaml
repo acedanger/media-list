@@ -14,6 +14,9 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    # Lets the app reach Sonarr's published port on the host (SONARR_URL default).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # No ports needed. DockTail proxies directly to the container IP.
     labels:
       - "docktail.service.enable=true"

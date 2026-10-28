@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>media-list</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --hover: #f5f5f7;
+    --accent: #0a66d8; --ok: #1a7f37; --warn: #9a6700; --danger: #c62828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161618; --fg: #f5f5f7; --muted: #a1a1a6; --line: #3a3a3c; --hover: #232326;
+            --accent: #4c9aff; --ok: #3fb950; --warn: #d29922; --danger: #f85149; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1rem; background: var(--bg); color: var(--fg);
+         font: 14px/1.4 system-ui, -apple-system, sans-serif; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+  .meta { color: var(--muted); margin: 0 0 1rem; }
+  .meta a { color: var(--accent); }
+  .banner { padding: .6rem .8rem; border: 1px solid var(--warn); border-radius: 6px; margin-bottom: 1rem; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-bottom: .75rem; }
+  .filters button, .toolbar button, dialog button {
+    font: inherit; padding: .35rem .7rem; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); color: var(--fg); cursor: pointer; }
+  .filters button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  input[type=search] { font: inherit; padding: .35rem .6rem; border: 1px solid var(--line);
+         border-radius: 6px; background: var(--bg); color: var(--fg); min-width: 12rem; flex: 1; max-width: 20rem; }
+  button.danger { border-color: var(--danger); color: var(--danger); }
+  button.danger:disabled { opacity: .4; cursor: default; }
+  button.solid-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.title { white-space: normal; min-width: 12rem; }
+  th { position: sticky; top: 0; background: var(--bg); user-select: none; }
+  th[data-sort] { cursor: pointer; }
+  th[data-sort]::after { content: ""; color: var(--muted); }
+  th.asc::after { content: " ▲"; } th.desc::after { content: " ▼"; }
+  tbody tr:hover { background: var(--hover); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td a { color: inherit; }
+  .badge { display: inline-block; padding: .05rem .45rem; border-radius: 999px; font-size: .8rem; border: 1px solid; }
+  .in_sonarr { color: var(--ok); } .excluded { color: var(--warn); } .missing { color: var(--muted); }
+  .unmonitored { color: var(--muted); font-size: .8rem; }
+  dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg);
+           max-width: min(32rem, calc(100vw - 2rem)); }
+  dialog ul { max-height: 14rem; overflow: auto; padding-left: 1.2rem; }
+  dialog .actions { display: flex; gap: .5rem; justify-content: flex-end; margin-top: 1rem; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<h1 id="title">media-list</h1>
+<p class="meta" id="meta">Loading…</p>
+<div id="banner"></div>
+
+<div class="toolbar">
+  <div class="filters" role="group" aria-label="Filter by Sonarr status">
+    <button data-filter="all" aria-pressed="true">All</button>
+    <button data-filter="in_sonarr" aria-pressed="false">In Sonarr</button>
+    <button data-filter="missing" aria-pressed="false">Not in Sonarr</button>
+    <button data-filter="excluded" aria-pressed="false">Excluded</button>
+  </div>
+  <input type="search" id="q" placeholder="Filter titles…" aria-label="Filter titles">
+  <button class="danger" id="remove" disabled>Remove selected</button>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr>
+    <th><input type="checkbox" id="all" aria-label="Select all removable shows"></th>
+    <th data-sort="rank">#</th>
+    <th data-sort="title">Title</th>
+    <th data-sort="year">Year</th>
+    <th data-sort="status">Sonarr</th>
+    <th data-sort="episodes">Episodes</th>
+    <th data-sort="size">On disk</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+</div>
+
+<dialog id="confirm">
+  <form method="dialog">
+    <h2 style="margin-top:0;font-size:1.1rem">Remove <span id="count"></span> from Sonarr?</h2>
+    <ul id="names"></ul>
+    <p class="muted">Each show is added to Sonarr's import list exclusions so the list doesn't re-add it.
+      You can undo that in Sonarr → Settings → Import Lists → Exclusions.</p>
+    <label><input type="checkbox" id="deleteFiles"> Also delete files from disk</label>
+    <div class="actions">
+      <button value="cancel">Cancel</button>
+      <button value="ok" class="solid-danger" id="confirmBtn">Remove</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const STATUS = { in_sonarr: "In Sonarr", excluded: "Excluded", missing: "Not in Sonarr" };
+let shows = [], filter = "all", sortKey = "rank", sortDir = 1;
+const selected = new Set();
+
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function fmtSize(b) {
+  if (!b) return "";
+  const u = ["B","KB","MB","GB","TB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return b.toFixed(i > 2 ? 1 : 0) + " " + u[i];
+}
+function sortValue(s) {
+  switch (sortKey) {
+    case "title": return (s.title || "").toLowerCase();
+    case "status": return s.status;
+    case "episodes": return s.sonarr ? s.sonarr.episodeFileCount : -1;
+    case "size": return s.sonarr ? s.sonarr.sizeOnDisk : -1;
+    default: return s[sortKey] ?? 0;
+  }
+}
+function visible() {
+  const q = $("#q").value.trim().toLowerCase();
+  return shows
+    .filter(s => filter === "all" || s.status === filter)
+    .filter(s => !q || (s.title || "").toLowerCase().includes(q))
+    .sort((a, b) => { const x = sortValue(a), y = sortValue(b); return (x < y ? -1 : x > y ? 1 : 0) * sortDir; });
+}
+function render() {
+  const rows = visible();
+  $("#rows").innerHTML = rows.map(s => {
+    const so = s.sonarr;
+    const title = s.imdb ? `<a href="https://www.imdb.com/title/${esc(s.imdb)}/" target="_blank" rel="noopener">${esc(s.title)}</a>` : esc(s.title);
+    return `<tr>
+      <td>${so ? `<input type="checkbox" data-id="${so.id}" ${selected.has(so.id) ? "checked" : ""} aria-label="Select ${esc(s.title)}">` : ""}</td>
+      <td class="num">${s.rank ?? ""}</td>
+      <td class="title">${title}</td>
+      <td>${s.year ?? ""}</td>
+      <td><span class="badge ${s.status}">${STATUS[s.status]}</span>${so && !so.monitored ? ' <span class="unmonitored">unmonitored</span>' : ""}</td>
+      <td class="num">${so ? `${so.episodeFileCount} / ${so.episodeCount}` : ""}</td>
+      <td class="num">${so ? fmtSize(so.sizeOnDisk) : ""}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="7" class="muted">No shows match.</td></tr>`;
+
+  const removable = rows.filter(s => s.sonarr).map(s => s.sonarr.id);
+  $("#all").checked = removable.length > 0 && removable.every(id => selected.has(id));
+  $("#all").disabled = removable.length === 0;
+  $("#remove").disabled = selected.size === 0;
+  $("#remove").textContent = selected.size ? `Remove selected (${selected.size})` : "Remove selected";
+  document.querySelectorAll("th[data-sort]").forEach(th => {
+    th.classList.toggle("asc", th.dataset.sort === sortKey && sortDir === 1);
+    th.classList.toggle("desc", th.dataset.sort === sortKey && sortDir === -1);
+  });
+}
+async function load() {
+  const res = await fetch("api/shows");
+  const data = await res.json();
+  if (!res.ok) { $("#meta").textContent = data.error || "Failed to load"; return; }
+  shows = data.shows;
+  const ids = new Set(shows.filter(s => s.sonarr).map(s => s.sonarr.id));
+  [...selected].forEach(id => ids.has(id) || selected.delete(id));
+
+  const counts = { in_sonarr: 0, excluded: 0, missing: 0 };
+  shows.forEach(s => counts[s.status]++);
+  $("#title").textContent = data.list;
+  $("#meta").innerHTML = `${shows.length} shows · ${counts.in_sonarr} in Sonarr · ${counts.missing} not in Sonarr · ${counts.excluded} excluded
+    · sorted by <code>${esc(data.sort)}</code> · list updated ${new Date(data.updated * 1000).toLocaleString()}
+    · feeds: <a href="sonarr.json">sonarr.json</a>, <a href="radarr.json">radarr.json</a>`;
+  const sn = data.sonarr;
+  $("#banner").innerHTML = !sn.configured ? `<div class="banner">SONARR_API_KEY is not set, so Sonarr status is unavailable.</div>`
+    : sn.ok === false ? `<div class="banner">Could not reach Sonarr: ${esc(sn.error)}</div>` : "";
+  render();
+}
+
+document.querySelectorAll(".filters button").forEach(b => b.addEventListener("click", () => {
+  filter = b.dataset.filter;
+  document.querySelectorAll(".filters button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  render();
+}));
+$("#q").addEventListener("input", render);
+document.querySelectorAll("th[data-sort]").forEach(th => th.addEventListener("click", () => {
+  if (sortKey === th.dataset.sort) sortDir = -sortDir; else { sortKey = th.dataset.sort; sortDir = 1; }
+  render();
+}));
+$("#rows").addEventListener("change", e => {
+  const id = Number(e.target.dataset.id);
+  if (!id) return;
+  e.target.checked ? selected.add(id) : selected.delete(id);
+  render();
+});
+$("#all").addEventListener("change", e => {
+  visible().filter(s => s.sonarr).forEach(s => e.target.checked ? selected.add(s.sonarr.id) : selected.delete(s.sonarr.id));
+  render();
+});
+$("#remove").addEventListener("click", () => {
+  const picked = shows.filter(s => s.sonarr && selected.has(s.sonarr.id));
+  $("#count").textContent = picked.length === 1 ? "1 show" : `${picked.length} shows`;
+  $("#names").innerHTML = picked.map(s => `<li>${esc(s.title)}</li>`).join("");
+  $("#deleteFiles").checked = false;
+  $("#confirm").showModal();
+});
+$("#confirm").addEventListener("close", async () => {
+  if ($("#confirm").returnValue !== "ok") return;
+  $("#remove").disabled = true;
+  $("#remove").textContent = "Removing…";
+  const res = await fetch("api/sonarr/remove", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seriesIds: [...selected], deleteFiles: $("#deleteFiles").checked }),
+  });
+  const data = await res.json();
+  const failed = (data.results || []).filter(r => !r.ok);
+  if (failed.length || data.error) alert(data.error || `${failed.length} removal(s) failed:\n` + failed.map(f => f.error).join("\n"));
+  selected.clear();
+  await load();
+});
+
+load();
+</script>
+</body>
+</html>

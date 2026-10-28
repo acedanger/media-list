@@ -11,14 +11,32 @@ sorted by `score_average`.
 
 | Path           | Purpose                                             |
 | -------------- | --------------------------------------------------- |
-| `/`            | HTML table of the list                              |
+| `/`            | The list with Sonarr status; filter, sort, bulk remove |
 | `/sonarr.json` | Sonarr v4 Custom List (`[{"tvdbId": …}]`)            |
 | `/radarr.json` | Radarr Custom List (`[{"id": <tmdb>, "imdb_id": …}]`) |
 | `/items.json`  | Raw MDBList response (movies + shows)               |
+| `/api/shows`   | List shows merged with Sonarr status (used by `/`)  |
+| `/api/sonarr/remove` | `POST {"seriesIds": [..], "deleteFiles": bool}` |
 | `/healthz`     | Health check                                        |
 
 Results are cached for `CACHE_TTL` seconds (default 3600). If a refresh fails, the
 last good copy keeps being served.
+
+## Sonarr management
+
+With `SONARR_API_KEY` set, the page shows each show's Sonarr status (**In Sonarr**,
+**Not in Sonarr**, or **Excluded** via Sonarr's import list exclusions), episode
+counts and size on disk, and lets you remove selected shows from Sonarr.
+
+Removing a show always adds it to Sonarr's import list exclusions, so the Custom
+List doesn't add it back on the next sync. Deleting files from disk is opt-in per
+removal. Exclusions can be undone in Sonarr → Settings → Import Lists → Exclusions.
+
+The app reaches Sonarr at `SONARR_URL` (default `http://host.docker.internal:8989`,
+i.e. Sonarr's published port on the Docker host).
+
+Anyone who can reach this service on the tailnet can remove shows, so scope the
+Tailscale grant for `svc:media-list` accordingly.
 
 ## Run
 
@@ -48,6 +66,8 @@ The host running Sonarr/Radarr must be on the tailnet (or route to it).
 | `MDBLIST_ORDER`   | `asc`                     |
 | `CACHE_TTL`       | `3600`                    |
 | `PORT`            | `8080`                    |
+| `SONARR_API_KEY`  | *(optional; enables Sonarr features)* |
+| `SONARR_URL`      | `http://host.docker.internal:8989` |
 
 ### Tailscale OAuth
 

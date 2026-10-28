@@ -4,7 +4,7 @@ ENV PYTHONUNBUFFERED=1 \
     PORT=8080
 
 WORKDIR /app
-COPY app.py .
+COPY app.py index.html ./
 
 RUN adduser -D -H -u 10001 app
 USER app
