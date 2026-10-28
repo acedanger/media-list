@@ -130,14 +130,62 @@ def sonarr(method, path, params=None):
 
 
 def sonarr_state():
-    """Return ({tvdbId: series}, {excluded tvdbIds}) from Sonarr."""
+    """Return ({tvdbId: series}, {excluded tvdbIds}, {seriesId: queue summary}) from Sonarr."""
     series = {s["tvdbId"]: s for s in sonarr("GET", "/series") if s.get("tvdbId")}
     try:
         excluded = {e["tvdbId"] for e in sonarr("GET", "/importlistexclusion") if e.get("tvdbId")}
     except urllib.error.HTTPError as exc:
         log.warning("could not read Sonarr list exclusions: %s", exc)
         excluded = set()
-    return series, excluded
+    try:
+        queue = summarize_queue(fetch_queue())
+    except (urllib.error.URLError, ValueError) as exc:
+        log.warning("could not read Sonarr queue: %s", exc)
+        queue = {}
+    return series, excluded, queue
+
+
+def fetch_queue():
+    """Return every record in Sonarr's download queue."""
+    records, page = [], 1
+    while True:
+        data = sonarr("GET", "/queue", {"page": page, "pageSize": 1000,
+                                       "includeUnknownSeriesItems": "false"})
+        records.extend(data.get("records") or [])
+        if len(records) >= data.get("totalRecords", 0) or not data.get("records"):
+            return records
+        page += 1
+
+
+IMPORT_STATES = {"importPending", "importing", "importBlocked"}
+
+
+def summarize_queue(records):
+    """Group queue records by series: counts, progress, latest ETA and any problems."""
+    summary = {}
+    for r in records:
+        sid = r.get("seriesId")
+        if sid is None:
+            continue
+        q = summary.setdefault(sid, {"count": 0, "downloading": 0, "importing": 0, "problems": 0,
+                                     "size": 0, "sizeleft": 0, "eta": None, "messages": []})
+        q["count"] += 1
+        q["size"] += r.get("size") or 0
+        q["sizeleft"] += r.get("sizeleft") or 0
+        if r.get("status") == "downloading":
+            q["downloading"] += 1
+        if r.get("trackedDownloadState") in IMPORT_STATES:
+            q["importing"] += 1
+        if r.get("trackedDownloadStatus") in ("warning", "error") or r.get("status") in ("failed", "warning"):
+            q["problems"] += 1
+            for m in r.get("statusMessages") or []:
+                q["messages"].extend(m.get("messages") or [m.get("title")])
+        eta = r.get("estimatedCompletionTime")
+        if eta and (q["eta"] is None or eta > q["eta"]):
+            q["eta"] = eta
+    for q in summary.values():
+        q["messages"] = sorted({m for m in q["messages"] if m})[:5]
+    return summary
 
 
 def tmdb_id(item):
@@ -160,10 +208,10 @@ def shows_with_sonarr(data):
         "list": LIST, "sort": SORT, "order": ORDER,
         "updated": cache.fetched_at, "sonarr": {"configured": bool(SONARR_API_KEY)},
     }
-    series, excluded = {}, set()
+    series, excluded, queue = {}, set(), {}
     if SONARR_API_KEY:
         try:
-            series, excluded = sonarr_state()
+            series, excluded, queue = sonarr_state()
             result["sonarr"]["ok"] = True
         except (urllib.error.URLError, ValueError) as exc:
             log.error("Sonarr request failed: %s", exc)
@@ -195,6 +243,7 @@ def shows_with_sonarr(data):
                 "episodeFileCount": stats.get("episodeFileCount", 0),
                 "episodeCount": stats.get("episodeCount", 0),
                 "sizeOnDisk": stats.get("sizeOnDisk", 0),
+                "queue": queue.get(s["id"]),
             }
         shows.append(row)
     result["shows"] = shows

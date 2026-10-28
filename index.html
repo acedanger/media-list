@@ -46,6 +46,11 @@
   .in_sonarr { color: var(--ok); } .excluded { color: var(--warn); } .missing { color: var(--muted); }
   .unmonitored { color: var(--muted); font-size: .8rem; }
   .show-status { font-size: .85rem; }
+  .queue { font-size: .8rem; min-width: 8rem; }
+  .queue .bar { height: 4px; background: var(--line); border-radius: 2px; margin: .2rem 0; overflow: hidden; }
+  .queue .bar span { display: block; height: 100%; background: var(--accent); }
+  .queue .problem { color: var(--danger); cursor: help; }
+  .queue .importing { color: var(--warn); }
   .show-status.returning-series, .show-status.in-production { color: var(--ok); }
   .show-status.canceled { color: var(--danger); }
   .show-status.ended { color: var(--muted); }
@@ -91,6 +96,7 @@
     <button data-filter="in_sonarr" aria-pressed="false">In Sonarr</button>
     <button data-filter="missing" aria-pressed="false">Not in Sonarr</button>
     <button data-filter="excluded" aria-pressed="false">Excluded</button>
+    <button data-filter="queued" aria-pressed="false">In queue</button>
   </div>
   <details class="dropdown" id="statusFilter">
     <summary id="statusLabel">Status: All</summary>
@@ -112,6 +118,7 @@
     <th data-sort="status">Sonarr</th>
     <th data-sort="episodes">Episodes</th>
     <th data-sort="size">On disk</th>
+    <th data-sort="queue" title="Episodes in Sonarr's download queue">Queue</th>
     <th><span class="muted" title="IDs">IDs</span></th>
   </tr></thead>
   <tbody id="rows"></tbody>
@@ -163,12 +170,29 @@ function idsCell(ids, rank) {
   }).join("");
   return rows ? `<details class="ids"><summary aria-label="Show IDs">…</summary><dl>${rows}</dl></details>` : "";
 }
+function fmtEta(iso) {
+  const mins = Math.round((new Date(iso) - Date.now()) / 60000);
+  if (!(mins > 0)) return "";
+  return mins < 60 ? `${mins}m` : mins < 1440 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${Math.round(mins / 1440)}d`;
+}
+function queueCell(q) {
+  if (!q) return "";
+  const pct = q.size ? Math.round(100 * (q.size - q.sizeleft) / q.size) : 0;
+  const eps = q.count === 1 ? "1 ep" : `${q.count} eps`;
+  const eta = q.eta && fmtEta(q.eta);
+  const parts = [];
+  if (q.problems) parts.push(`<span class="problem" title="${esc(q.messages.join("\n") || "See Sonarr's Activity page")}">⚠ ${q.problems} issue${q.problems > 1 ? "s" : ""}</span>`);
+  if (q.importing) parts.push(`<span class="importing">${q.importing} importing</span>`);
+  if (eta) parts.push(`ETA ${eta}`);
+  return `<div class="queue">${eps} · ${pct}%<div class="bar"><span style="width:${pct}%"></span></div>${parts.join(" · ")}</div>`;
+}
 const slug = s => String(s || "").toLowerCase().replace(/[^a-z]+/g, "-");
 function sortValue(s) {
   switch (sortKey) {
     case "title": return (s.title || "").toLowerCase();
     case "showStatus": return s.showStatus || "~";
     case "score": return s.score ?? -1;
+    case "queue": return s.sonarr?.queue?.count ?? -1;
     case "status": return s.status;
     case "episodes": return s.sonarr ? s.sonarr.episodeFileCount : -1;
     case "size": return s.sonarr ? s.sonarr.sizeOnDisk : -1;
@@ -178,7 +202,7 @@ function sortValue(s) {
 function visible() {
   const q = $("#q").value.trim().toLowerCase();
   return shows
-    .filter(s => filter === "all" || s.status === filter)
+    .filter(s => filter === "all" || (filter === "queued" ? !!s.sonarr?.queue : s.status === filter))
     .filter(s => !statusFilter.size || statusFilter.has(showStatusOf(s)))
     .filter(s => !q || (s.title || "").toLowerCase().includes(q))
     .sort((a, b) => { const x = sortValue(a), y = sortValue(b); return (x < y ? -1 : x > y ? 1 : 0) * sortDir; });
@@ -198,9 +222,10 @@ function render() {
       <td><span class="badge ${s.status}">${STATUS[s.status]}</span>${so && !so.monitored ? ' <span class="unmonitored">unmonitored</span>' : ""}</td>
       <td class="num">${so ? `${so.episodeFileCount} / ${so.episodeCount}` : ""}</td>
       <td class="num">${so ? fmtSize(so.sizeOnDisk) : ""}</td>
+      <td>${queueCell(so?.queue)}</td>
       <td>${idsCell(s.ids, s.rank)}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="10" class="muted">No shows match.</td></tr>`;
+  }).join("") || `<tr><td colspan="11" class="muted">No shows match.</td></tr>`;
 
   const removable = rows.filter(s => s.sonarr).map(s => s.sonarr.id);
   $("#all").checked = removable.length > 0 && removable.every(id => selected.has(id));
@@ -237,8 +262,9 @@ async function load() {
 
   const counts = { in_sonarr: 0, excluded: 0, missing: 0 };
   shows.forEach(s => counts[s.status]++);
+  const queued = shows.filter(s => s.sonarr?.queue).length;
   $("#title").textContent = data.list;
-  $("#meta").innerHTML = `${shows.length} shows · ${counts.in_sonarr} in Sonarr · ${counts.missing} not in Sonarr · ${counts.excluded} excluded
+  $("#meta").innerHTML = `${shows.length} shows · ${counts.in_sonarr} in Sonarr · ${counts.missing} not in Sonarr · ${counts.excluded} excluded · ${queued} in queue
     · sorted by <code>${esc(data.sort)}</code> · list updated ${new Date(data.updated * 1000).toLocaleString()}
     · feeds: <a href="sonarr.json">sonarr.json</a>, <a href="radarr.json">radarr.json</a>`;
   const sn = data.sonarr;
@@ -272,7 +298,7 @@ document.querySelectorAll(".filters button").forEach(b => b.addEventListener("cl
 $("#q").addEventListener("input", render);
 document.querySelectorAll("th[data-sort]").forEach(th => th.addEventListener("click", () => {
   // Numbers where bigger is better start highest-first.
-  const DESC_FIRST = ["score", "episodes", "size"];
+  const DESC_FIRST = ["score", "episodes", "size", "queue"];
   if (sortKey === th.dataset.sort) sortDir = -sortDir;
   else { sortKey = th.dataset.sort; sortDir = DESC_FIRST.includes(sortKey) ? -1 : 1; }
   render();
