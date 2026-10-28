@@ -37,12 +37,12 @@ def fetch_list():
     movies, shows = [], []
     cursor = None
     while True:
-        params = {"sort": SORT, "order": ORDER, "limit": 1000}
+        # MDBList API keys go in ?apikey=; the Bearer header is only for OAuth tokens.
+        params = {"apikey": API_KEY, "sort": SORT, "order": ORDER, "limit": 1000}
         if cursor:
             params["cursor"] = cursor
         url = f"{API_BASE}/lists/{LIST}/items?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(url, headers={
-            "Authorization": f"Bearer {API_KEY}",
             "Accept": "application/json",
             "User-Agent": "media-list/1.0",
         })
