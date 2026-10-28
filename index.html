@@ -45,6 +45,18 @@
   .badge { display: inline-block; padding: .05rem .45rem; border-radius: 999px; font-size: .8rem; border: 1px solid; }
   .in_sonarr { color: var(--ok); } .excluded { color: var(--warn); } .missing { color: var(--muted); }
   .unmonitored { color: var(--muted); font-size: .8rem; }
+  .show-status { font-size: .85rem; }
+  .show-status.returning-series, .show-status.in-production { color: var(--ok); }
+  .show-status.canceled { color: var(--danger); }
+  .show-status.ended { color: var(--muted); }
+  details.ids summary { list-style: none; cursor: pointer; padding: 0 .4rem; border-radius: 4px;
+                        color: var(--muted); font-weight: 700; }
+  details.ids summary::-webkit-details-marker { display: none; }
+  details.ids summary:hover, details.ids[open] summary { background: var(--hover); color: var(--fg); }
+  details.ids dl { display: grid; grid-template-columns: auto auto; gap: .1rem .6rem; margin: .3rem 0 0;
+                   font-size: .8rem; }
+  details.ids dt { color: var(--muted); }
+  details.ids dd { margin: 0; font-family: ui-monospace, monospace; }
   dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg);
            max-width: min(32rem, calc(100vw - 2rem)); }
   dialog ul { max-height: 14rem; overflow: auto; padding-left: 1.2rem; }
@@ -75,9 +87,11 @@
     <th data-sort="rank">#</th>
     <th data-sort="title">Title</th>
     <th data-sort="year">Year</th>
+    <th data-sort="showStatus">Status</th>
     <th data-sort="status">Sonarr</th>
     <th data-sort="episodes">Episodes</th>
     <th data-sort="size">On disk</th>
+    <th><span class="muted" title="IDs">IDs</span></th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
@@ -110,9 +124,24 @@ function fmtSize(b) {
   while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
   return b.toFixed(i > 2 ? 1 : 0) + " " + u[i];
 }
+const ID_LINKS = {
+  imdb: id => `https://www.imdb.com/title/${id}/`,
+  tmdb: id => `https://www.themoviedb.org/tv/${id}`,
+  tvdb: id => `https://thetvdb.com/dereferrer/series/${id}`,
+  trakt: id => `https://trakt.tv/search/trakt/${id}?id_type=show`,
+};
+function idsCell(ids) {
+  const rows = Object.entries(ids || {}).filter(([, v]) => v).map(([k, v]) => {
+    const val = ID_LINKS[k] ? `<a href="${esc(ID_LINKS[k](v))}" target="_blank" rel="noopener">${esc(v)}</a>` : esc(v);
+    return `<dt>${esc(k)}</dt><dd>${val}</dd>`;
+  }).join("");
+  return rows ? `<details class="ids"><summary aria-label="Show IDs">…</summary><dl>${rows}</dl></details>` : "";
+}
+const slug = s => String(s || "").toLowerCase().replace(/[^a-z]+/g, "-");
 function sortValue(s) {
   switch (sortKey) {
     case "title": return (s.title || "").toLowerCase();
+    case "showStatus": return s.showStatus || "~";
     case "status": return s.status;
     case "episodes": return s.sonarr ? s.sonarr.episodeFileCount : -1;
     case "size": return s.sonarr ? s.sonarr.sizeOnDisk : -1;
@@ -136,11 +165,13 @@ function render() {
       <td class="num">${s.rank ?? ""}</td>
       <td class="title">${title}</td>
       <td>${s.year ?? ""}</td>
+      <td><span class="show-status ${slug(s.showStatus)}">${esc(s.showStatus)}</span></td>
       <td><span class="badge ${s.status}">${STATUS[s.status]}</span>${so && !so.monitored ? ' <span class="unmonitored">unmonitored</span>' : ""}</td>
       <td class="num">${so ? `${so.episodeFileCount} / ${so.episodeCount}` : ""}</td>
       <td class="num">${so ? fmtSize(so.sizeOnDisk) : ""}</td>
+      <td>${idsCell(s.ids)}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="7" class="muted">No shows match.</td></tr>`;
+  }).join("") || `<tr><td colspan="9" class="muted">No shows match.</td></tr>`;
 
   const removable = rows.filter(s => s.sonarr).map(s => s.sonarr.id);
   $("#all").checked = removable.length > 0 && removable.every(id => selected.has(id));

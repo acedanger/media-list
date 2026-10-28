@@ -62,6 +62,24 @@ def fetch_list():
     return {"movies": movies, "shows": shows}
 
 
+def fetch_show_info(tmdb_ids):
+    """Return {tmdb_id: {"status": ..., "ids": {...}}} via MDBList's batch media lookup."""
+    info = {}
+    for i in range(0, len(tmdb_ids), 100):
+        req = urllib.request.Request(
+            f"{API_BASE}/tmdb/show?{urllib.parse.urlencode({'apikey': API_KEY})}",
+            data=json.dumps({"ids": tmdb_ids[i:i + 100]}).encode(),
+            headers={"Content-Type": "application/json", "Accept": "application/json",
+                     "User-Agent": "media-list/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            for item in json.load(resp):
+                tmdb = (item.get("ids") or {}).get("tmdb")
+                if tmdb:
+                    info[tmdb] = {"status": item.get("status"), "ids": item.get("ids") or {}}
+    return info
+
+
 class Cache:
     def __init__(self):
         self.lock = threading.Lock()
@@ -72,7 +90,15 @@ class Cache:
         with self.lock:
             if self.data is None or time.time() - self.fetched_at > CACHE_TTL:
                 try:
-                    self.data = fetch_list()
+                    data = fetch_list()
+                    try:
+                        data["show_info"] = fetch_show_info(
+                            [t for t in (tmdb_id(s) for s in data["shows"]) if t])
+                    except (urllib.error.URLError, ValueError) as exc:
+                        # Status and extra IDs are nice-to-have; keep the list without them.
+                        log.error("show info lookup failed: %s", exc)
+                        data["show_info"] = (self.data or {}).get("show_info", {})
+                    self.data = data
                     self.fetched_at = time.time()
                     log.info("refreshed %s: %d movies, %d shows", LIST,
                              len(self.data["movies"]), len(self.data["shows"]))
@@ -143,13 +169,19 @@ def shows_with_sonarr(data):
             result["sonarr"].update(ok=False, error=str(exc))
 
     shows = []
+    show_info = data.get("show_info", {})
     for item in data["shows"]:
         tvdb = item.get("tvdb_id")
         s = series.get(tvdb)
+        info = show_info.get(tmdb_id(item), {})
+        ids = {"imdb": item.get("imdb_id"), "tmdb": tmdb_id(item), "tvdb": tvdb}
+        ids.update({k: v for k, v in (info.get("ids") or {}).items() if v})
         row = {
             "rank": item.get("rank"), "title": item.get("title"),
             "year": item.get("release_year"), "imdb": item.get("imdb_id"),
-            "tvdbId": tvdb, "tmdbId": tmdb_id(item),
+            "ids": ids,
+            # TMDB's status (Returning Series, Ended, Canceled, ...), else Sonarr's.
+            "showStatus": info.get("status") or (s.get("status", "").title() if s else None),
             "status": "in_sonarr" if s else ("excluded" if tvdb in excluded else "missing"),
         }
         if s:
