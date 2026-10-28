@@ -57,6 +57,22 @@
                    font-size: .8rem; }
   details.ids dt { color: var(--muted); }
   details.ids dd { margin: 0; font-family: ui-monospace, monospace; }
+  details.dropdown { position: relative; }
+  details.dropdown summary { list-style: none; cursor: pointer; padding: .35rem .7rem;
+                             border: 1px solid var(--line); border-radius: 6px; }
+  details.dropdown summary::-webkit-details-marker { display: none; }
+  details.dropdown summary::after { content: " ▾"; color: var(--muted); }
+  details.dropdown.active summary { border-color: var(--accent); color: var(--accent); }
+  details.dropdown .menu { position: absolute; z-index: 10; top: calc(100% + 4px); left: 0; min-width: 14rem;
+                           background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+                           padding: .4rem; box-shadow: 0 6px 20px #0003; }
+  details.dropdown label { display: flex; gap: .5rem; align-items: center; padding: .3rem .4rem;
+                           border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  details.dropdown label:hover { background: var(--hover); }
+  details.dropdown .count { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  details.dropdown .clear { display: block; width: 100%; margin-top: .3rem; font: inherit; padding: .3rem;
+                            border: 0; border-top: 1px solid var(--line); background: none; color: var(--accent);
+                            cursor: pointer; }
   dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg);
            max-width: min(32rem, calc(100vw - 2rem)); }
   dialog ul { max-height: 14rem; overflow: auto; padding-left: 1.2rem; }
@@ -76,6 +92,10 @@
     <button data-filter="missing" aria-pressed="false">Not in Sonarr</button>
     <button data-filter="excluded" aria-pressed="false">Excluded</button>
   </div>
+  <details class="dropdown" id="statusFilter">
+    <summary id="statusLabel">Status: All</summary>
+    <div class="menu" id="statusMenu"></div>
+  </details>
   <input type="search" id="q" placeholder="Filter titles…" aria-label="Filter titles">
   <button class="danger" id="remove" disabled>Remove selected</button>
 </div>
@@ -117,6 +137,9 @@ const $ = s => document.querySelector(s);
 const STATUS = { in_sonarr: "In Sonarr", excluded: "Excluded", missing: "Not in Sonarr" };
 let shows = [], filter = "all", sortKey = "rank", sortDir = 1;
 const selected = new Set();
+const statusFilter = new Set();  // empty = all statuses
+const NO_STATUS = "(none)";
+const showStatusOf = s => s.showStatus || NO_STATUS;
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function fmtSize(b) {
@@ -154,6 +177,7 @@ function visible() {
   const q = $("#q").value.trim().toLowerCase();
   return shows
     .filter(s => filter === "all" || s.status === filter)
+    .filter(s => !statusFilter.size || statusFilter.has(showStatusOf(s)))
     .filter(s => !q || (s.title || "").toLowerCase().includes(q))
     .sort((a, b) => { const x = sortValue(a), y = sortValue(b); return (x < y ? -1 : x > y ? 1 : 0) * sortDir; });
 }
@@ -186,6 +210,21 @@ function render() {
     th.classList.toggle("desc", th.dataset.sort === sortKey && sortDir === -1);
   });
 }
+function renderStatusMenu() {
+  const counts = {};
+  shows.forEach(s => { const k = showStatusOf(s); counts[k] = (counts[k] || 0) + 1; });
+  [...statusFilter].forEach(k => k in counts || statusFilter.delete(k));
+  $("#statusMenu").innerHTML = Object.keys(counts).sort().map(k =>
+    `<label><input type="checkbox" value="${esc(k)}" ${statusFilter.has(k) ? "checked" : ""}>
+       <span class="show-status ${slug(k)}">${esc(k)}</span><span class="count">${counts[k]}</span></label>`
+  ).join("") + `<button type="button" class="clear">Show all</button>`;
+  updateStatusLabel();
+}
+function updateStatusLabel() {
+  const n = statusFilter.size;
+  $("#statusLabel").textContent = !n ? "Status: All" : n === 1 ? `Status: ${[...statusFilter][0]}` : `Status: ${n} selected`;
+  $("#statusFilter").classList.toggle("active", n > 0);
+}
 async function load() {
   const res = await fetch("api/shows");
   const data = await res.json();
@@ -203,8 +242,25 @@ async function load() {
   const sn = data.sonarr;
   $("#banner").innerHTML = !sn.configured ? `<div class="banner">SONARR_API_KEY is not set, so Sonarr status is unavailable.</div>`
     : sn.ok === false ? `<div class="banner">Could not reach Sonarr: ${esc(sn.error)}</div>` : "";
+  renderStatusMenu();
   render();
 }
+
+$("#statusMenu").addEventListener("change", e => {
+  e.target.checked ? statusFilter.add(e.target.value) : statusFilter.delete(e.target.value);
+  updateStatusLabel();
+  render();
+});
+$("#statusMenu").addEventListener("click", e => {
+  if (!e.target.classList.contains("clear")) return;
+  statusFilter.clear();
+  $("#statusMenu").querySelectorAll("input").forEach(i => i.checked = false);
+  updateStatusLabel();
+  render();
+});
+// Close the dropdown on outside click or Escape.
+document.addEventListener("click", e => { if (!$("#statusFilter").contains(e.target)) $("#statusFilter").open = false; });
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("#statusFilter").open = false; });
 
 document.querySelectorAll(".filters button").forEach(b => b.addEventListener("click", () => {
   filter = b.dataset.filter;
